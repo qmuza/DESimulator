@@ -37,9 +37,10 @@ struct Event {
     double time;
     int customerID;
     
-    // TODO ANGGOTA 1: Implement operator< (reversed for min-heap)
-    // Format: bool operator<(const Event& other) const { ... }
-    // Hint: return time > other.time; (reversed!)
+    bool operator<(const Event& other) const {
+    return time > other.time; // reversed for min-heap
+    }
+
 };
 
 // ----------------------------------------------------------------------------
@@ -54,8 +55,14 @@ struct State {
     double nextArrivalTime;        // Scheduled next arrival time
     queue<double> arrivalTimes;    // Queue of customer arrival times
     
-    // TODO ANGGOTA 1: Initialize in constructor
-    // TODO ANGGOTA 2: Add any additional state if needed
+    State() {
+        clock = 0.0;
+        numInSystem = 0;
+        serverBusy = false;
+        nextArrivalTime = 0.0;
+        while (!arrivalTimes.empty()) arrivalTimes.pop();
+    }
+
 };
 
 // ----------------------------------------------------------------------------
@@ -119,26 +126,24 @@ struct RepResult {
 class RNG {
 private:
     mt19937_64 generator;
-    
+
 public:
-    // TODO ANGGOTA 1: Constructor with seed
     RNG(int seed) {
-        // TODO: Initialize generator with seed
+        generator.seed(seed);
     }
-    
-    // TODO ANGGOTA 1: Generate exponential random variable
-    // Formula: -ln(U) / rate, where U ~ Uniform(0,1)
+
     double exponential(double rate) {
-        // TODO: Implement inverse transform method
-        // uniform_real_distribution<double> dist(0.0, 1.0);
-        // double u = dist(generator);
-        // return -log(u) / rate;
-        return 0.0; // PLACEHOLDER
+        uniform_real_distribution<double> dist(0.0, 1.0);
+        double u = dist(generator);
+        return -log(u) / rate;
     }
-    
-    // TODO ANGGOTA 1: (Optional) Test method to verify distribution
+
     void test(double rate, int samples = 1000) {
-        // TODO: Generate samples and print mean
+        double sum = 0.0;
+        for (int i = 0; i < samples; i++)
+            sum += exponential(rate);
+        cout << "[RNG TEST] Empirical mean: " << (sum / samples)
+             << " | Theoretical: " << (1.0 / rate) << endl;
     }
 };
 
@@ -169,14 +174,19 @@ public:
     // TODO: Reset state, stats, schedule first arrival
     // ------------------------------------------------------------------------
     void init() {
-        // TODO ANGGOTA 1: 
-        // 1. Reset state (clock=0, numInSystem=0, serverBusy=false, etc)
-        // 2. Reset stats (all zeros)
-        // 3. Clear FEL
-        // 4. Schedule first arrival at time = exponential(lambda)
-        
-        cout << "[INIT] Simulation initialized" << endl;
-    }
+        state = State(); // reset all state variables
+        stats = Stats(); // Anggota 2 will define this struct
+        nextCustomerID = 1;
+
+        while (!FEL.empty()) FEL.pop();
+
+        double firstArrival = rng.exponential(params.lambda);
+        scheduleEvent(ARRIVAL, firstArrival);
+        state.nextArrivalTime = firstArrival;
+
+        cout << "[INIT] Simulation initialized at t=0.0 (first arrival at t=" 
+             << firstArrival << ")" << endl;
+}
     
     // ------------------------------------------------------------------------
     // UPDATE TIME INTEGRALS
@@ -197,23 +207,33 @@ public:
     // TODO: Process arrival event
     // ------------------------------------------------------------------------
     void handleArrival(Event e) {
-        // TODO ANGGOTA 1:
-        // 1. Save previous clock time
-        // 2. Update clock to event time
-        // 3. Call updateTimeIntegrals(previousTime)
-        // 4. Increment numArrived
-        // 5. Schedule NEXT arrival (time = clock + exponential(lambda))
-        // 6. Check server status:
-        //    a. If server IDLE:
-        //       - Set serverBusy = true
-        //       - Schedule DEPARTURE (time = clock + exponential(mu))
-        //    b. If server BUSY:
-        //       - Check queue capacity (if queueCap != -1)
-        //       - If not full: add arrival time to queue
-        //       - If full: reject (track rejections)
-        // 7. numInSystem++
-        
-        cout << "[ARRIVAL] Customer " << e.customerID << " at t=" << e.time << endl;
+        double prevTime = state.clock;
+        state.clock = e.time;
+        updateTimeIntegrals(prevTime);
+
+        stats.numArrived++;
+
+        double nextArrival = state.clock + rng.exponential(params.lambda);
+        scheduleEvent(ARRIVAL, nextArrival);
+        state.nextArrivalTime = nextArrival;
+
+        if (!state.serverBusy) {
+            state.serverBusy = true;
+            double serviceTime = rng.exponential(params.mu);
+            scheduleEvent(DEPARTURE, state.clock + serviceTime);
+        } else {
+            if (params.queueCap == -1 || 
+                (int)state.arrivalTimes.size() < params.queueCap) {
+                state.arrivalTimes.push(state.clock);
+            } else {
+                cout << "[ARRIVAL] Customer " << e.customerID 
+                     << " rejected (queue full)" << endl;
+            }
+        }   
+
+        state.numInSystem++;
+        cout << "[ARRIVAL] Customer " << e.customerID 
+             << " at t=" << fixed << setprecision(4) << e.time << endl;
     }
     
     // ------------------------------------------------------------------------

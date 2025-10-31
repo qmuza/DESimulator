@@ -6,6 +6,7 @@
 #include <cmath>
 #include <string>
 #include <iomanip>
+#include <ctime>
 
 using namespace std;
 
@@ -76,10 +77,17 @@ struct Stats {
     double areaB;            // Time-weighted server busy integral
     int numServed;           // Count of departed customers
     int numArrived;          // Count of arrived customers
-    double warmupEndTime;    // Time when warmup period ends
+    double warmupEndTime;    // Time when warmup period ends // Kapan trigger time buat warmupend nya?
     
     // TODO ANGGOTA 2: Add warmup-related tracking
-    // TODO ANGGOTA 2: Initialize in constructor
+    Stats() {
+        totalDelay = 0.0;
+        areaQ = 0.0;
+        areaB = 0.0;
+        numServed = 0;
+        numArrived = 0;
+        warmupEndTime = 0.0;
+    }
 };
 
 // ----------------------------------------------------------------------------
@@ -96,10 +104,27 @@ struct Params {
     int seed;                   // Random seed
     int queueCap;               // Queue capacity (-1 = unlimited)
     TerminationMode termMode;   // Termination mode
+    int reps;                   // Repetitions
     string outdir;              // Output directory
     
-    // TODO ANGGOTA 2: Add constructor with default values
-    // TODO ANGGOTA 2: Add validation method (lambda < mu, etc)
+    Params() {
+        lambda = 0.0;
+        mu = 1.0;
+        maxServed = 10000;      // yang penting gede
+        horizonT = 10000.0;     // yang penting gede
+        warmup = 10;            // 10 aja gapapa kayanya?
+        seed = static_cast<int>(time(nullptr)); // biar defaultnya beda terus
+        queueCap = -1;
+        termMode = BY_TIME;
+        reps = 10;
+        outdir = "./";
+    }
+
+    bool queueNotExploding() {
+        return (lambda < mu);
+    }
+
+
 };
 
 // ----------------------------------------------------------------------------
@@ -116,7 +141,15 @@ struct RepResult {
     int numServed;
     double simTime;
     
-    // TODO ANGGOTA 2: Add constructor
+    RepResult() {
+        repID = 0;
+        avgQ = 0;
+        utilization = 0.0;
+        avgDelay = 0.0;
+        avgWait = 0.0;
+        numServed = 0;
+        simTime = 0;
+    }
 };
 
 // ============================================================================
@@ -211,7 +244,7 @@ public:
         state.clock = e.time;
         updateTimeIntegrals(prevTime);
 
-        stats.numArrived++;
+        stats.numArrived++;                                         // kalau direject (queue full) diitung ngga? kalo engga mending pindah bawah kayanya
 
         double nextArrival = state.clock + rng.exponential(params.lambda);
         scheduleEvent(ARRIVAL, nextArrival);
@@ -219,12 +252,9 @@ public:
 
         if (!state.serverBusy) {
             state.serverBusy = true;
-            double serviceTime = rng.exponential(params.mu);
-            scheduleEvent(DEPARTURE, state.clock + serviceTime);
         } else {
             if (params.queueCap == -1 || 
-                (int)state.arrivalTimes.size() < params.queueCap) {
-                state.arrivalTimes.push(state.clock);
+                (int)state.arrivalTimes.size() < params.queueCap) {  // Mending cek pake (state.numInSystem - 1) ga sih?
             } else {
                 cout << "[ARRIVAL] Customer " << e.customerID 
                      << " rejected (queue full)" << endl;
@@ -242,23 +272,31 @@ public:
     // TODO: Process departure event
     // ------------------------------------------------------------------------
     void handleDeparture(Event e) {
-        // TODO ANGGOTA 2:
-        // 1. Save previous clock time
-        // 2. Update clock to event time
-        // 3. Call updateTimeIntegrals(previousTime)
-        // 4. Calculate delay for this customer:
-        //    - Get arrival time from front of queue (if queue not empty)
-        //    - delay = clock - arrivalTime
-        // 5. If past warmup: update stats (totalDelay, numServed)
-        // 6. numInSystem--
-        // 7. Check queue:
-        //    a. If queue NOT empty:
-        //       - Pop from queue
-        //       - Schedule DEPARTURE (time = clock + exponential(mu))
-        //    b. If queue empty:
-        //       - Set serverBusy = false
+        double prevTime = state.clock;
+        state.clock = e.time;
+        updateTimeIntegrals(prevTime);
+
+        stats.numServed++;
         
-        cout << "[DEPARTURE] Customer " << e.customerID << " at t=" << e.time << endl;
+        if (!state.arrivalTimes.empty()) {
+            double arrived_at = state.arrivalTimes.front();
+            state.arrivalTimes.pop();
+            double delay = (e.time - arrived_at);       // artinya delay di kita itungannya dari dateng sampe selesai service?
+            if (isWarmupComplete()) {                   // kayanya kata bu novera sampe mulai service deh
+                stats.totalDelay += delay;
+            }
+        }
+
+        state.numInSystem--;
+
+        if(state.numInSystem > 0) {                     // lanjut service antrian selanjutnya
+            double serviceTime = rng.exponential(params.mu);
+            scheduleEvent(DEPARTURE, state.clock + serviceTime);
+        } else {
+            state.serverBusy = false;                   // servernya nganggur
+        }
+        
+        cout << "[DEPARTURE] Customer " << e.customerID << " at t=" << fixed << setprecision(4) << e.time << endl;
     }
     
     // ------------------------------------------------------------------------
@@ -267,9 +305,11 @@ public:
     // TODO: Check if simulation should terminate
     // ------------------------------------------------------------------------
     bool shouldTerminate() {
-        // TODO ANGGOTA 2:
-        // 1. If BY_SERVED mode: return numServed >= maxServed
-        // 2. If BY_TIME mode: return clock >= horizonT
+        if (params.termMode == BY_SERVED) {
+            return (stats.numServed - params.warmup) >= params.maxServed;   // harusnya yang dateng pas warmup belom diitung
+        } else {
+            return (state.clock - stats.warmupEndTime)  >= params.horizonT; // harusnya waktu warmup ngga masuk ke horizonT?
+        }
         return false; // PLACEHOLDER
     }
     
@@ -279,11 +319,11 @@ public:
     // TODO: Check if warmup period has ended
     // ------------------------------------------------------------------------
     bool isWarmupComplete() {
-        // TODO ANGGOTA 2:
-        // 1. If BY_SERVED: return numServed >= warmup
-        // 2. If BY_TIME: return clock >= warmup
-        // 3. Mark warmup end time if just completed
-        return true; // PLACEHOLDER - assume always warmed up for now
+        return stats.numServed > params.warmup; 
+    }
+
+    bool isWarmupCompletedRightAtTheEndOfThisService() {                    // belom tau sih buat apa
+        return stats.numServed == params.warmup;
     }
     
     // ------------------------------------------------------------------------
@@ -295,7 +335,10 @@ public:
         // TODO ANGGOTA 1 & 2:
         // 1. Call init()
         // 2. While NOT shouldTerminate():
-        //    a. Get next event from FEL (top + pop)
+        //    a. Get next event from FEL (top + pop) // idk ya dari top atau ngga, soalnya kalo liat kodenya di dalem handleArrival(),
+                                                     // dia bakal nge push arrival selanjutnya, terus baru ngepush departure buat arrival yang ini
+                                                     // regardless kalau dilihat dari time nya duluan orang baru dateng atau yang ini selesai service
+                                                     // kayanya harus kita ganti jadi ambil event w/ time terkecil dari FEL
         //    b. Check if warmup complete
         //    c. Process event:
         //       - if ARRIVAL: handleArrival(event)
@@ -347,7 +390,9 @@ public:
         Event e;
         e.type = type;
         e.time = time;
-        e.customerID = nextCustomerID++;
+        e.customerID = nextCustomerID++;    // Jangan update disini deh, masa setiap call scheduleEvent customerID nya di increment?
+                                            // padahal tiap customer ID harus call 2 kali, buat arrival sama departure
+                                            // mungkin kita ganti jadi scheduleEvent(type, time, customerID)?
         FEL.push(e);
     }
 };
@@ -362,15 +407,6 @@ public:
 // TODO ANGGOTA 2: Loop over replications
 // ----------------------------------------------------------------------------
 vector<RepResult> runReplications(Params params, int numReps) {
-    // TODO ANGGOTA 2:
-    // 1. Create vector to store results
-    // 2. Loop for i = 1 to numReps:
-    //    a. Create new Params with seed = baseSeed + i
-    //    b. Create DES object
-    //    c. Run simulation and get result
-    //    d. Store result
-    //    e. Print progress
-    // 3. Return vector of results
     
     vector<RepResult> results;
     
@@ -378,7 +414,7 @@ vector<RepResult> runReplications(Params params, int numReps) {
         cout << "\n=== REPLICATION " << i << " / " << numReps << " ===" << endl;
         
         Params p = params;
-        p.seed = params.seed + i;  // Different seed per rep
+        p.seed = params.seed + i*i;  // Different seed per rep
         
         DES sim(p);
         RepResult res = sim.run();
@@ -504,11 +540,6 @@ vector<Summary> computeSummaries(vector<RepResult>& results) {
 // TODO ANGGOTA 2: Export detailed results
 // ----------------------------------------------------------------------------
 void writePerRepCSV(vector<RepResult>& results, string filename) {
-    // TODO ANGGOTA 2:
-    // 1. Open file for writing
-    // 2. Write header: RepID,AvgQ,Utilization,AvgDelay,AvgWait,NumServed,SimTime
-    // 3. Write each result as CSV row
-    // 4. Close file
     
     ofstream file(filename);
     if (!file.is_open()) {
@@ -539,11 +570,6 @@ void writePerRepCSV(vector<RepResult>& results, string filename) {
 // TODO ANGGOTA 2: Export confidence intervals
 // ----------------------------------------------------------------------------
 void writeSummaryCSV(vector<Summary>& summaries, string filename) {
-    // TODO ANGGOTA 2:
-    // 1. Open file for writing
-    // 2. Write header: Metric,Mean,StdDev,CI_Lower,CI_Upper,CI_Width
-    // 3. Write each summary as CSV row
-    // 4. Close file
     
     ofstream file(filename);
     if (!file.is_open()) {
@@ -578,46 +604,55 @@ void writeSummaryCSV(vector<Summary>& summaries, string filename) {
 // TODO ANGGOTA 2: Extract parameters from argv
 // ----------------------------------------------------------------------------
 Params parseArguments(int argc, char* argv[]) {
-    // TODO ANGGOTA 2:
-    // 1. Create Params with default values
-    // 2. Loop through argv:
-    //    - Check for --lambda, --mu, --term, --reps, etc
-    //    - Parse value after flag
-    //    - Update Params
-    // 3. Validate parameters (lambda < mu for stability)
-    // 4. Return Params
     
-    Params p;
-    // Default values
-    p.lambda = 0.9;
-    p.mu = 1.0;
-    p.maxServed = 10000;
-    p.horizonT = 10000.0;
-    p.warmup = 1000;
-    p.seed = 12345;
-    p.queueCap = -1;  // unlimited
-    p.termMode = BY_SERVED;
-    p.outdir = "./";
+    Params p = Params();
     
     // Parse arguments
     for (int i = 1; i < argc; i++) {
         string arg = argv[i];
         
-        if (arg == "--lambda" && i+1 < argc) {
-            p.lambda = stod(argv[++i]);
-        }
-        else if (arg == "--mu" && i+1 < argc) {
-            p.mu = stod(argv[++i]);
-        }
-        // TODO: Add other parameters
-        else if (arg == "--help") {
+        if (i+1 < argc) {
+            if (arg == "--lambda") {
+                p.lambda = stod(argv[++i]);
+            }
+            else if (arg == "--mu") {
+                p.mu = stod(argv[++i]);
+            }
+            else if (arg == "--horizonT") {
+                p.horizonT = stod(argv[++i]);
+            }
+            else if (arg == "--maxServed") {
+                p.maxServed = stoi(argv[++i]);
+            }
+            else if (arg == "--warmup") {
+                p.warmup = stoi(argv[++i]);
+            }
+            else if (arg == "--reps") {
+                p.reps = stoi(argv[++i]);
+            }
+            else if (arg == "--seed") {
+                p.seed = stoi(argv[++i]);
+            }
+            else if (arg == "--queueCap") {
+                p.queueCap = stoi(argv[++i]);
+            }
+            else if (arg == "--term") {
+                if (argv[++i] == "served") {
+                    p.termMode = BY_SERVED;
+                } else {
+                    p.termMode = BY_TIME;
+                };
+            }
+            else if (arg == "--outdir") {
+                p.outdir = argv[++i];
+            }
+        } else if (arg == "--help") {
             printHelp();
             exit(0);
         }
     }
     
-    // Validate
-    if (p.lambda >= p.mu) {
+    if (!p.queueNotExploding()) {
         cerr << "WARNING: System unstable (lambda >= mu)" << endl;
     }
     
@@ -632,11 +667,19 @@ void printHelp() {
     // TODO ANGGOTA 2: Print all available parameters and examples
     cout << "Usage: ./des_sim [OPTIONS]\n";
     cout << "\nOptions:\n";
-    cout << "  --lambda <value>    Arrival rate (default: 0.9)\n";
+    cout << "  --lambda <value>    Arrival rate (default: 0.0)\n";
     cout << "  --mu <value>        Service rate (default: 1.0)\n";
+    cout << "  --horizonT <value>  Time limit before termination (default: 10000.0)\n";
+    cout << "  --maxServed <value> N of Served customers before termination (default: 10000)\n";
+    cout << "  --warmup <value>    N of starting customers not included in the metrics (default: 10)\n";
+    cout << "  --reps <value>      N of repeated simulations (default: 10)\n";
+    cout << "  --seed <value>      RNG seed (default: static_cast<int>(time(nullptr)))\n";
+    cout << "  --queueCap <value>  Maximum queue length (default: -1 (-1 = no queue limit))\n";
+    cout << "  --term <value>      Termination mode (default: time)\n";
+    cout << "  --outdir <value>    Output directory (default: ./)\n";
     // TODO: Add all other options
     cout << "\nExample:\n";
-    cout << "  ./des_sim --lambda 0.9 --mu 1.0 --maxServed 20000 --reps 10\n";
+    cout << "  ./DES --lambda 0.9 --mu 1.0 --maxServed 20000 --warmup 1000 --reps 10 --seed 12345 --queueCap -1 --term served --outdir ./\n";
 }
 
 // ============================================================================
@@ -699,17 +742,16 @@ int main(int argc, char* argv[]) {
     
     // TODO ANGGOTA 2: Parse command line arguments
     Params params = parseArguments(argc, argv);
-    int numReps = 10;  // TODO: Get from CLI
     
     // Print configuration
     cout << "\nConfiguration:" << endl;
     cout << "  Lambda: " << params.lambda << endl;
     cout << "  Mu: " << params.mu << endl;
     cout << "  Rho: " << (params.lambda / params.mu) << endl;
-    cout << "  Replications: " << numReps << endl;
+    cout << "  Replications: " << params.reps << endl;
     
     // TODO ANGGOTA 2: Run replications
-    vector<RepResult> results = runReplications(params, numReps);
+    vector<RepResult> results = runReplications(params, params.reps);
     
     // TODO ANGGOTA 3: Compute summaries
     vector<Summary> summaries = computeSummaries(results);

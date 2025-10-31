@@ -255,6 +255,7 @@ public:
         } else {
             if (params.queueCap == -1 || 
                 (int)state.arrivalTimes.size() < params.queueCap) {  // Mending cek pake (state.numInSystem - 1) ga sih?
+                    state.arrivalTimes.push(state.clock);
             } else {
                 cout << "[ARRIVAL] Customer " << e.customerID 
                      << " rejected (queue full)" << endl;

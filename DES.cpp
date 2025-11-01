@@ -175,8 +175,7 @@ public:
         double sum = 0.0;
         for (int i = 0; i < samples; i++)
             sum += exponential(rate);
-        cout << "[RNG TEST] Empirical mean: " << (sum / samples)
-             << " | Theoretical: " << (1.0 / rate) << endl;
+        cout << "[RNG TEST] Empirical mean: " << (sum / samples) << " | Theoretical: " << (1.0 / rate) << endl;
     }
 };
 
@@ -214,11 +213,10 @@ public:
         while (!FEL.empty()) FEL.pop();
 
         double firstArrival = rng.exponential(params.lambda);
-        scheduleEvent(ARRIVAL, firstArrival);
+        scheduleEvent(ARRIVAL, firstArrival, nextCustomerID);
         state.nextArrivalTime = firstArrival;
 
-        cout << "[INIT] Simulation initialized at t=0.0 (first arrival at t=" 
-             << firstArrival << ")" << endl;
+        cout << "[INIT] Simulation initialized at t=0.0 (first arrival at t=" << firstArrival << ")" << endl;
 }
     
     // ------------------------------------------------------------------------
@@ -244,28 +242,31 @@ public:
         state.clock = e.time;
         updateTimeIntegrals(prevTime);
 
+        // If server is busy and queue is full, reject
+        if (state.serverBusy && params.queueCap != -1 && (int)state.arrivalTimes.size() >= params.queueCap) {
+            cout << "[ARRIVAL] Customer " << e.customerID << " rejected (queue full)" << endl;
+            return; // stop here, customer rejected
+        }
+
         stats.numArrived++;                                         // kalau direject (queue full) diitung ngga? kalo engga mending pindah bawah kayanya
+        state.numInSystem++;
 
         double nextArrival = state.clock + rng.exponential(params.lambda);
-        scheduleEvent(ARRIVAL, nextArrival);
+        scheduleEvent(ARRIVAL, nextArrival, ++nextCustomerID);
         state.nextArrivalTime = nextArrival;
 
+        // If server idle, start service now
         if (!state.serverBusy) {
             state.serverBusy = true;
+            double departTime = state.clock + rng.exponential(params.mu);
+            scheduleEvent(DEPARTURE, departTime, e.customerID);
         } else {
-            if (params.queueCap == -1 || 
-                (int)state.arrivalTimes.size() < params.queueCap) {  // Mending cek pake (state.numInSystem - 1) ga sih?
-                    state.arrivalTimes.push(state.clock);
-            } else {
-                cout << "[ARRIVAL] Customer " << e.customerID 
-                     << " rejected (queue full)" << endl;
+            // Server busy → add to queue
+            state.arrivalTimes.push(e.time);
             }
-        }   
 
-        state.numInSystem++;
-        cout << "[ARRIVAL] Customer " << e.customerID 
-             << " at t=" << fixed << setprecision(4) << e.time << endl;
-    }
+            cout << "[ARRIVAL] Customer " << e.customerID <<" arrived at t=" << fixed << setprecision(4) << e.time << endl;
+        } 
     
     // ------------------------------------------------------------------------
     // HANDLE DEPARTURE
@@ -292,7 +293,8 @@ public:
 
         if(state.numInSystem > 0) {                     // lanjut service antrian selanjutnya
             double serviceTime = rng.exponential(params.mu);
-            scheduleEvent(DEPARTURE, state.clock + serviceTime);
+            scheduleEvent(DEPARTURE, state.clock + serviceTime, e.customerID); // customerID nya gimana ya? soalnya kan dia ngga tau customerID siapa yang dilayani selanjutnya
+                                                                               // mungkin kita perlu simpan customerID di queue juga?
         } else {
             state.serverBusy = false;                   // servernya nganggur
         }
@@ -386,17 +388,16 @@ public:
     // SCHEDULE EVENT (Helper)
     // Owner: ANGGOTA 1
     // ------------------------------------------------------------------------
-    void scheduleEvent(EventType type, double time) {
+    void scheduleEvent(EventType type, double time, int customerID) {
         // TODO ANGGOTA 1: Create event and push to FEL
         Event e;
         e.type = type;
         e.time = time;
-        e.customerID = nextCustomerID++;    // Jangan update disini deh, masa setiap call scheduleEvent customerID nya di increment?
+        e.customerID = customerID;    // Jangan update disini deh, masa setiap call scheduleEvent customerID nya di increment?
                                             // padahal tiap customer ID harus call 2 kali, buat arrival sama departure
                                             // mungkin kita ganti jadi scheduleEvent(type, time, customerID)?
         FEL.push(e);
     }
-};
 
 // ============================================================================
 // SECTION 5: MULTI-REPLICATION CONTROLLER

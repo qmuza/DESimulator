@@ -267,6 +267,7 @@ public:
 
             cout << "[ARRIVAL] Customer " << e.customerID <<" arrived at t=" << fixed << setprecision(4) << e.time << endl;
         } 
+    }
     
     // ------------------------------------------------------------------------
     // HANDLE DEPARTURE
